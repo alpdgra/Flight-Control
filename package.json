@@ -10,7 +10,8 @@
     "icons": "node tools/make-icons.js",
     "verify": "node tools/verify.js",
     "check": "npm run build && npm test && npm run verify",
-    "serve": "http-server . -p 8080 -c-1"
+    "serve": "http-server . -p 8080 -c-1",
+    "screenshots": "node tools/make-screenshots.js"
   },
   "license": "MIT"
 }
