@@ -590,6 +590,14 @@ body.is-portrait .rotate-hint { display: block; }
   // Separation at which the proximity alarm starts, as a multiple of the
   // distance at which the two aircraft would actually collide.
   var WARN_FACTOR = 2.2;
+  // Lateral spacing of the downwind leg flown when an aircraft has to go
+  // around to line up with a runway it has already passed, and how far past
+  // the approach fix that leg runs before turning base.
+  var CIRCUIT_OFFSET = 190;
+  var DOWNWIND_LEG = 200;
+  // How far an aircraft may turn to join the approach directly before it is
+  // sent round the circuit instead.
+  var MAX_JOIN_TURN = 110 * Math.PI / 180;
 
   // --------------------------------------------------------------- math utils
 
@@ -1102,15 +1110,85 @@ body.is-portrait .rotate-hint { display: block; }
     return null;
   };
 
-  /** Snap the tail of an aircraft's path onto a zone's approach. */
+  /**
+   * Snap the tail of an aircraft's path onto a zone's approach.
+   *
+   * The player drags *onto* the zone, so the drawn line always ends on top of
+   * it — past the point where the approach begins. Those trailing points have
+   * to go, otherwise the aircraft overflies the runway, doubles back to the
+   * approach fix, and lands on the third pass.
+   */
   Game.prototype.assignLanding = function (a, zone) {
     a.landingZone = zone;
+
     if (zone.kind === 'helipad') {
+      // Drop anything drawn inside the pad; the pad centre is the last word.
+      while (a.path.length) {
+        var q = a.path[a.path.length - 1];
+        if (dist2(q.x, q.y, zone.x, zone.y) <= zone.radius * zone.radius) a.path.pop();
+        else break;
+      }
       a.path.push({ x: zone.x, y: zone.y });
-    } else {
-      a.path.push({ x: zone.fx, y: zone.fy });
-      a.path.push({ x: zone.ex, y: zone.ey });
+      return;
     }
+
+    // Trim back to the last drawn point that is still short of the approach
+    // fix, measured along the runway's own axis.
+    while (a.path.length) {
+      var p = a.path[a.path.length - 1];
+      if ((p.x - zone.fx) * zone.dx + (p.y - zone.fy) * zone.dy > 0) a.path.pop();
+      else break;
+    }
+
+    // Whatever the path now ends at may still sit ahead of the fix — the
+    // aircraft itself might be past the runway. Flying straight from there to
+    // the fix can mean reversing back down the centreline, so check the turn it
+    // would demand; if it is too tight, go round a circuit instead.
+    var tail = a.path.length ? a.path[a.path.length - 1] : { x: a.x, y: a.y };
+    var ahead = (tail.x - zone.fx) * zone.dx + (tail.y - zone.fy) * zone.dy;
+    var reach = dist(tail.x, tail.y, zone.fx, zone.fy);
+    var joinTurn = reach < 30 ? 0
+      : Math.abs(angleDelta(Math.atan2(zone.fy - tail.y, zone.fx - tail.x), zone.angle));
+
+    if (ahead > 0 && joinTurn > MAX_JOIN_TURN) {
+      var nx = -zone.dy, ny = zone.dx;
+      var lat = (tail.x - zone.fx) * nx + (tail.y - zone.fy) * ny;
+      var side = lat >= 0 ? 1 : -1;
+      if (Math.abs(lat) < 24) {
+        // Sitting on the centreline: break toward whichever side has room.
+        var probeX = zone.fx + nx * CIRCUIT_OFFSET;
+        var probeY = zone.fy + ny * CIRCUIT_OFFSET;
+        side = (probeX > CIRCUIT_OFFSET && probeX < this.W - CIRCUIT_OFFSET &&
+                probeY > CIRCUIT_OFFSET && probeY < this.H - CIRCUIT_OFFSET) ? 1 : -1;
+      }
+      var off = side * Math.max(CIRCUIT_OFFSET, Math.abs(lat));
+      var self = this;
+      /* A point in the runway's own frame: `along` measured from the approach
+         fix in the landing direction, `lateral` out to one side. */
+      var placeAt = function (along, lateral) {
+        return {
+          x: clamp(zone.fx + zone.dx * along + nx * lateral, 12, self.W - 12),
+          y: clamp(zone.fy + zone.dy * along + ny * lateral, 12, self.H - 12)
+        };
+      };
+      // An aircraft already out on the downwind side lands its crosswind point
+      // on top of itself; a zero-length segment has no meaningful heading, so
+      // only take waypoints that actually go somewhere.
+      var addLeg = function (pt) {
+        var prev = a.path.length ? a.path[a.path.length - 1] : { x: a.x, y: a.y };
+        if (dist2(pt.x, pt.y, prev.x, prev.y) > 25 * 25) a.path.push(pt);
+      };
+      // A full circuit: out to the side, back down past the fix, then across
+      // onto the extended centreline. Every corner is a right angle, and the
+      // downwind leg always has length because it runs past the fix rather
+      // than stopping abeam it.
+      addLeg(placeAt(ahead, off));                // crosswind
+      addLeg(placeAt(-DOWNWIND_LEG, off));        // downwind, past the fix
+      addLeg(placeAt(-DOWNWIND_LEG, 0));          // base, onto the centreline
+    }
+
+    a.path.push({ x: zone.fx, y: zone.fy });
+    a.path.push({ x: zone.ex, y: zone.ey });
   };
 
   // ---- simulation ----------------------------------------------------------
