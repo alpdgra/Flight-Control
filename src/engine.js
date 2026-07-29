@@ -36,9 +36,14 @@
   // choosing which end of a strip to land on. Keeps an aircraft from picking a
   // marginally nearer tip that it would have to double back to reach.
   var TURN_COST = 260;
-  // How far an aircraft may turn to enter the threshold directly before it is
-  // given a hook round the end of the strip to line up with.
+  // How far an aircraft may turn to enter the threshold directly before a curve
+  // round the end of the strip is offered as an alternative.
   var MAX_JOIN_TURN = 100 * Math.PI / 180;
+  // A turn beyond this reads as the path doubling back on itself. Routes that
+  // contain one are penalised heavily rather than merely by the turn they cost,
+  // so they only ever win when there is no alternative at all.
+  var HAIRPIN = 130 * Math.PI / 180;
+  var HAIRPIN_PENALTY = 8000;
 
   // --------------------------------------------------------------- math utils
 
@@ -119,13 +124,13 @@
   // -------------------------------------------------------------------- zones
 
   /**
-   * One usable direction along a strip: the tip the wheels touch, and the far
-   * end the rollout finishes at.
+   * The usable direction along a strip: the threshold the wheels touch, and the
+   * far end the rollout finishes at.
    *
    * There is deliberately no approach fix out in front of the strip. Aircraft
-   * fly to the tip and land on it, the same way a helicopter simply arrives at
-   * the pad — anything further out reads as the aircraft leaving the runway to
-   * go and line up somewhere else.
+   * fly to the threshold and land on it, the same way a helicopter simply
+   * arrives at the pad — anything further out reads as the aircraft leaving the
+   * runway to go and line up somewhere else.
    */
   function approach(idx, cx, cy, angle, half) {
     var dx = Math.cos(angle), dy = Math.sin(angle);
@@ -142,9 +147,10 @@
   /**
    * Build a linear landing zone (runway or water lane).
    *
-   * A strip is usable in both directions, exactly like a real runway numbered
-   * at both ends. Aircraft take whichever end they arrive at, so arriving from
-   * the "wrong" side costs a turn rather than a lap of the map.
+   * A strip is one-way: it has a single threshold and every aircraft lands in
+   * the same direction, the way the chevrons on it show. Arriving from the far
+   * side therefore costs a run down the length of the strip and a turn round
+   * the threshold — that is the point of a one-way runway.
    */
   function strip(opts) {
     var dx = Math.cos(opts.angle), dy = Math.sin(opts.angle);
@@ -160,10 +166,7 @@
       width: opts.width,
       accepts: opts.accepts,
       color: opts.color,
-      approaches: [
-        approach(0, opts.x, opts.y, opts.angle, half),
-        approach(1, opts.x, opts.y, opts.angle + Math.PI, half)
-      ]
+      approaches: [approach(0, opts.x, opts.y, opts.angle, half)]
     };
   }
 
@@ -584,7 +587,7 @@
    * how far the aircraft would fly and its sharpest turn, so both ends can be
    * compared and the better one taken.
    */
-  Game.prototype.buildApproach = function (a, zone, ap, drawn) {
+  Game.prototype.buildApproach = function (a, zone, ap, drawn, useArc) {
     var pts = drawn.slice();
 
     // The player releases *on* the strip, so the drawn line ends somewhere out
@@ -598,14 +601,15 @@
       else break;
     }
 
-    // Touch down on the tip and run the full length of the strip one way.
-    // Landing part-way along cuts the corner off the runway, so the tip is the
+    // Touch down on the threshold and run the full length of the strip. Landing
+    // part-way along cuts the corner off the runway, so the threshold is the
     // only entry point.
     //
-    // An aircraft arriving broadside cannot enter the tip already pointing down
-    // the strip, so it gets a hook: two points that swing it round the end and
-    // line it up. The hook stays within a runway width of the threshold — it is
-    // a tight turn onto the runway, not a corridor out in front of it.
+    // An aircraft arriving broadside cannot enter the threshold already pointing
+    // down the strip. `useArc` offers it a curve round the end to line up with;
+    // the caller builds the route both ways and keeps whichever costs less, so
+    // an aircraft already beside the threshold — where the curve would send it
+    // away before bringing it back — simply takes the corner instead.
     var tail = pts.length ? pts[pts.length - 1] : { x: a.x, y: a.y };
 
     // The direction the aircraft will be travelling as it reaches the tip. Very
@@ -626,7 +630,7 @@
     var joinTurn = Math.abs(angleDelta(incoming, ap.angle));
     var curved = false;
 
-    if (joinTurn > MAX_JOIN_TURN) {
+    if (useArc && joinTurn > MAX_JOIN_TURN) {
       // Curve onto the strip with an arc that finishes at the threshold already
       // pointing down it. The arc is tangent to the way the aircraft is coming
       // in at one end and to the runway at the other, so both joins are smooth.
@@ -690,9 +694,9 @@
   /**
    * Snap the tail of an aircraft's path onto a landing zone.
    *
-   * A strip can be landed on at either tip, so both are costed and the better
-   * one wins — mostly the nearer, but a route that would need the aircraft to
-   * double back is penalised so it loses to the longer, straighter one.
+   * A strip is one-way, so there is a single candidate. The comparison loop is
+   * kept because it is what would choose between them if a map ever wanted a
+   * strip usable from both ends.
    */
   Game.prototype.assignLanding = function (a, zone) {
     a.landingZone = zone;
@@ -712,12 +716,15 @@
     var drawn = a.path;
     var best = null, bestAp = null, bestCost = Infinity;
     for (var i = 0; i < zone.approaches.length; i++) {
-      var candidate = this.buildApproach(a, zone, zone.approaches[i], drawn);
-      var cost = candidate.length + candidate.worstTurn * TURN_COST;
-      if (cost < bestCost) {
-        bestCost = cost;
-        best = candidate;
-        bestAp = zone.approaches[i];
+      for (var arc = 0; arc < 2; arc++) {
+        var candidate = this.buildApproach(a, zone, zone.approaches[i], drawn, arc === 1);
+        var cost = candidate.length + candidate.worstTurn * TURN_COST +
+                   (candidate.worstTurn > HAIRPIN ? HAIRPIN_PENALTY : 0);
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = candidate;
+          bestAp = zone.approaches[i];
+        }
       }
     }
     a.approach = bestAp;

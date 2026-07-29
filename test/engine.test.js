@@ -143,8 +143,8 @@ test('an aircraft lands travelling along the runway heading', () => {
   });
   assert.ok(touchdownHeading !== null, 'aircraft never touched down');
   assert.ok(
-    runway.approaches.some(ap => Math.abs(angleDelta(touchdownHeading, ap.angle)) < 0.02),
-    `landed on heading ${touchdownHeading}, which is neither end of the strip`
+    Math.abs(angleDelta(touchdownHeading, runway.approaches[0].angle)) < 0.02,
+    `landed on heading ${touchdownHeading}, not the strip's landing direction`
   );
 });
 
@@ -206,26 +206,26 @@ function entersAtATip(a) {
 
 /** The shortest route physically possible: to the nearest tip, then down it. */
 function shortestPossible(a, zone) {
-  const nearest = Math.min.apply(null,
-    zone.approaches.map(ap => dist(a.x, a.y, ap.tx, ap.ty)));
-  return nearest + zone.length;
+  const ap = zone.approaches[0];
+  return dist(a.x, a.y, ap.tx, ap.ty) + zone.length;
 }
 
-test('a strip is landed on from whichever end the aircraft arrives at', () => {
-  // Same runway, opposite sides: the two aircraft must use opposite ends
-  // rather than one of them flying all the way around.
+test('a strip is one-way: every aircraft lands in the same direction', () => {
+  // Opposite sides of the same runway still land the same way round, and
+  // neither route doubles back to get there.
   const g = soloGame();
   const runway = g.zones.find(z => z.id === 'main');
+  assert.strictEqual(runway.approaches.length, 1, 'a strip should offer one direction');
 
   const west = inbound(g, 'jet', 120, 500);
   assert.ok(route(g, west, runway.x, runway.y, 'w'));
   const east = inbound(g, 'jet', g.W - 120, 500);
   assert.ok(route(g, east, runway.x, runway.y, 'e'));
 
-  assert.notStrictEqual(west.approach.idx, east.approach.idx,
-    'both aircraft picked the same end of the runway');
   for (const a of [west, east]) {
+    assert.strictEqual(a.approach, runway.approaches[0]);
     assert.ok(sharpestTurn(a) < 135, `path reverses (${sharpestTurn(a).toFixed(0)}deg)`);
+    entersAtATip(a);
   }
 });
 
@@ -238,7 +238,7 @@ test('arriving from the far side does not cost a lap of the map', () => {
   assert.ok(route(g, a, deck.x, deck.y));
 
   const flown = routeLength(a);
-  assert.ok(flown < shortestPossible(a, deck) + 400,
+  assert.ok(flown < shortestPossible(a, deck) + 600,
     `flew ${flown.toFixed(0)} for a ${dist(a.x, a.y, deck.x, deck.y).toFixed(0)} hop`);
   assert.ok(sharpestTurn(a) < 135);
   assert.strictEqual(run(g, 120).filter(e => e.type === 'landed').length, 1);
@@ -280,7 +280,7 @@ test('every approach on every map is flyable without doubling back', () => {
             entersAtATip(a);
             const flown = routeLength(a);
             const floor = shortestPossible(a, z);
-            assert.ok(flown < floor + 800,
+            assert.ok(flown < floor + 600,
               `${where}: flew ${flown.toFixed(0)}, ${(flown - floor).toFixed(0)} more than needed`);
           }
           assert.strictEqual(run(g, 200).filter(e => e.type === 'landed').length, 1,
@@ -684,11 +684,10 @@ test('every map is playable: each aircraft in its pool has a zone', () => {
       if (z.kind !== 'helipad') {
         // the snapped approach fix must sit inside the world, otherwise
         // aircraft would have to fly off-map to line up
-        // both tips must sit inside the map so either can be flown to
-        for (const ap of z.approaches) {
-          assert.ok(ap.tx > -10 && ap.tx < g.W + 10 && ap.ty > -10 && ap.ty < g.H + 10,
-            `${map.id}/${z.id} has a tip off-map`);
-        }
+        assert.strictEqual(z.approaches.length, 1, `${map.id}/${z.id} is not one-way`);
+        const ap = z.approaches[0];
+        assert.ok(ap.tx > -10 && ap.tx < g.W + 10 && ap.ty > -10 && ap.ty < g.H + 10,
+          `${map.id}/${z.id} threshold is off-map`);
       }
     }
   }

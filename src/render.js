@@ -451,23 +451,19 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Threshold bars and aiming points at both ends — the strip is landed on
-      // from whichever side an aircraft arrives.
+      // Threshold bars and aiming points at the landing end only: the strip is
+      // one-way and this is the end aircraft touch down on.
       var bars = 4, bh = Wd * 0.13, gap = Wd * 0.075;
-      for (var end = -1; end <= 1; end += 2) {
-        for (var b = 0; b < bars; b++) {
-          var yy = -((bars - 1) / 2) * (bh + gap) + b * (bh + gap);
-          ctx.fillStyle = mark;
-          ctx.fillRect(end * (L / 2) - (end > 0 ? Wd * 0.66 : -Wd * 0.16),
-                       yy - bh / 2, Wd * 0.5, bh);
-        }
-        ctx.globalAlpha = 0.7;
+      for (var b = 0; b < bars; b++) {
+        var yy = -((bars - 1) / 2) * (bh + gap) + b * (bh + gap);
         ctx.fillStyle = mark;
-        var ax = end * (L / 2) - (end > 0 ? Wd * 1.92 : -Wd * 1.5);
-        ctx.fillRect(ax, -Wd * 0.30, Wd * 0.42, Wd * 0.10);
-        ctx.fillRect(ax, Wd * 0.20, Wd * 0.42, Wd * 0.10);
-        ctx.globalAlpha = 1;
+        ctx.fillRect(-L / 2 + Wd * 0.16, yy - bh / 2, Wd * 0.5, bh);
       }
+      ctx.globalAlpha = 0.7;
+      ctx.fillStyle = mark;
+      ctx.fillRect(-L / 2 + Wd * 1.5, -Wd * 0.30, Wd * 0.42, Wd * 0.10);
+      ctx.fillRect(-L / 2 + Wd * 1.5, Wd * 0.20, Wd * 0.42, Wd * 0.10);
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
 
@@ -476,10 +472,7 @@
     }
   }
 
-  /**
-   * Chevrons leading into a threshold. A strip is usable from either end, so
-   * this is drawn once per approach and each set points inward.
-   */
+  /** Chevrons leading into the threshold, showing the one landing direction. */
   function drawApproachChevrons(ctx, ap, color, ui) {
     ui = ui || 1;
     ctx.save();
@@ -1189,13 +1182,11 @@
           ctx.globalAlpha = 0.55;
           ctx.setLineDash([10 * this.ui, 8 * this.ui]);
           ctx.lineWidth = 3 * this.ui;
-          // mark the two tips an aircraft can touch down on
+          // mark the threshold aircraft touch down on
           ctx.setLineDash([]);
-          for (var t = -1; t <= 1; t += 2) {
-            ctx.beginPath();
-            ctx.arc(t * z.length / 2, 0, 9 * this.ui, 0, TAU);
-            ctx.stroke();
-          }
+          ctx.beginPath();
+          ctx.arc(-z.length / 2, 0, 9 * this.ui, 0, TAU);
+          ctx.stroke();
           ctx.setLineDash([]);
         }
       }
