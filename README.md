@@ -81,12 +81,13 @@ Keyboard: `Esc` or `Space` to pause, `Enter` to start, `R` to fly again.
 `index.html` is generated. Edit the files in `src/` and rebuild.
 
 ```sh
-npm run build     # bundle src/ into the single-file index.html
-npm test          # engine unit tests (node --test)
-npm run verify    # drive the built game in headless Chromium, write screenshots
-npm run check     # all three
-npm run icons     # regenerate the app icons
-npm run serve     # static server on :8080
+npm run build        # bundle src/ into the single-file index.html
+npm test             # engine unit tests (node --test)
+npm run verify       # drive the built game in headless Chromium
+npm run check        # all three
+npm run icons        # regenerate the app icons
+npm run screenshots  # regenerate the images in docs/
+npm run serve        # static server on :8080
 ```
 
 ```
@@ -101,13 +102,34 @@ build.js          inlines the above into index.html.
 tools/verify.js   browser checks: plays every map with real pointer input,
                   resizes, pauses, crashes, and runs the whole thing again
                   from a file:// URL.
+tools/make-screenshots.js
+                  composes the scenes in docs/ deliberately, so the images
+                  are reproducible rather than whatever live play produced.
+tools/make-icons.js
+                  renders the app icons from the game's own vector artwork.
 ```
 
 The engine is deterministic given a seed, which is what makes the simulation
-testable without a browser: `npm test` plays complete games in Node and asserts
-that aircraft land, that routes snap to the correct approach, that unrouted
-traffic never escapes the map, and that arrivals are never spawned on top of
-existing traffic.
+testable without a browser. `npm test` plays complete games in Node and asserts
+that aircraft land, that unrouted traffic never escapes the map, and that
+arrivals are never spawned on top of existing traffic.
+
+It also asserts the *shape* of a landing route, not just its outcome, which is
+where the bugs actually were. Early versions happily landed every aircraft while
+sending it on a detour to get there: the tests said pass and the game looked
+wrong. So the suite now sweeps every landing zone against every aircraft type it
+accepts, from bearings all round the compass, and requires that each route
+
+- enters at the strip's single threshold rather than cutting in part-way,
+- rolls out to the far end,
+- never turns through more than 135 degrees anywhere along its length,
+- and stays within a bounded distance of the shortest route possible.
+
+That sweep is what found the real defects — a trim that left the aircraft on the
+wrong side of the threshold, an alignment check reading a meaningless bearing at
+close range, a redundant waypoint that made an aircraft hop backwards before
+setting off — and it rejected two plausible-looking fixes that made things
+worse.
 
 ## Credit
 
