@@ -496,10 +496,9 @@ body.is-portrait .rotate-hint { display: block; }
           zone. Release, and it flies the line you drew.</li>
       <li><b>Match the colours.</b> Each zone only takes the aircraft shown on
           its badge. A route to the wrong zone simply will not stick.</li>
-      <li><b>Runways run one way.</b> Drag onto a strip and the aircraft enters
-          at the near end and runs its whole length. Coming in side-on it curves
-          round the threshold to line up &mdash; a tight turn onto the runway,
-          never a trip out and back.</li>
+      <li><b>Runways are one-way.</b> The chevrons show the only direction a
+          strip is landed in. Aircraft enter at that threshold and run its whole
+          length, curving round the end to line up if they arrive side-on.</li>
       <li><b>Nothing leaves.</b> An aircraft with no route flies straight on and
           turns back at the boundary. Draw loops to park it while you deal with
           traffic elsewhere.</li>
@@ -593,9 +592,14 @@ body.is-portrait .rotate-hint { display: block; }
   // choosing which end of a strip to land on. Keeps an aircraft from picking a
   // marginally nearer tip that it would have to double back to reach.
   var TURN_COST = 260;
-  // How far an aircraft may turn to enter the threshold directly before it is
-  // given a hook round the end of the strip to line up with.
+  // How far an aircraft may turn to enter the threshold directly before a curve
+  // round the end of the strip is offered as an alternative.
   var MAX_JOIN_TURN = 100 * Math.PI / 180;
+  // A turn beyond this reads as the path doubling back on itself. Routes that
+  // contain one are penalised heavily rather than merely by the turn they cost,
+  // so they only ever win when there is no alternative at all.
+  var HAIRPIN = 130 * Math.PI / 180;
+  var HAIRPIN_PENALTY = 8000;
 
   // --------------------------------------------------------------- math utils
 
@@ -676,13 +680,13 @@ body.is-portrait .rotate-hint { display: block; }
   // -------------------------------------------------------------------- zones
 
   /**
-   * One usable direction along a strip: the tip the wheels touch, and the far
-   * end the rollout finishes at.
+   * The usable direction along a strip: the threshold the wheels touch, and the
+   * far end the rollout finishes at.
    *
    * There is deliberately no approach fix out in front of the strip. Aircraft
-   * fly to the tip and land on it, the same way a helicopter simply arrives at
-   * the pad — anything further out reads as the aircraft leaving the runway to
-   * go and line up somewhere else.
+   * fly to the threshold and land on it, the same way a helicopter simply
+   * arrives at the pad — anything further out reads as the aircraft leaving the
+   * runway to go and line up somewhere else.
    */
   function approach(idx, cx, cy, angle, half) {
     var dx = Math.cos(angle), dy = Math.sin(angle);
@@ -699,9 +703,10 @@ body.is-portrait .rotate-hint { display: block; }
   /**
    * Build a linear landing zone (runway or water lane).
    *
-   * A strip is usable in both directions, exactly like a real runway numbered
-   * at both ends. Aircraft take whichever end they arrive at, so arriving from
-   * the "wrong" side costs a turn rather than a lap of the map.
+   * A strip is one-way: it has a single threshold and every aircraft lands in
+   * the same direction, the way the chevrons on it show. Arriving from the far
+   * side therefore costs a run down the length of the strip and a turn round
+   * the threshold — that is the point of a one-way runway.
    */
   function strip(opts) {
     var dx = Math.cos(opts.angle), dy = Math.sin(opts.angle);
@@ -717,10 +722,7 @@ body.is-portrait .rotate-hint { display: block; }
       width: opts.width,
       accepts: opts.accepts,
       color: opts.color,
-      approaches: [
-        approach(0, opts.x, opts.y, opts.angle, half),
-        approach(1, opts.x, opts.y, opts.angle + Math.PI, half)
-      ]
+      approaches: [approach(0, opts.x, opts.y, opts.angle, half)]
     };
   }
 
@@ -1141,7 +1143,7 @@ body.is-portrait .rotate-hint { display: block; }
    * how far the aircraft would fly and its sharpest turn, so both ends can be
    * compared and the better one taken.
    */
-  Game.prototype.buildApproach = function (a, zone, ap, drawn) {
+  Game.prototype.buildApproach = function (a, zone, ap, drawn, useArc) {
     var pts = drawn.slice();
 
     // The player releases *on* the strip, so the drawn line ends somewhere out
@@ -1155,14 +1157,15 @@ body.is-portrait .rotate-hint { display: block; }
       else break;
     }
 
-    // Touch down on the tip and run the full length of the strip one way.
-    // Landing part-way along cuts the corner off the runway, so the tip is the
+    // Touch down on the threshold and run the full length of the strip. Landing
+    // part-way along cuts the corner off the runway, so the threshold is the
     // only entry point.
     //
-    // An aircraft arriving broadside cannot enter the tip already pointing down
-    // the strip, so it gets a hook: two points that swing it round the end and
-    // line it up. The hook stays within a runway width of the threshold — it is
-    // a tight turn onto the runway, not a corridor out in front of it.
+    // An aircraft arriving broadside cannot enter the threshold already pointing
+    // down the strip. `useArc` offers it a curve round the end to line up with;
+    // the caller builds the route both ways and keeps whichever costs less, so
+    // an aircraft already beside the threshold — where the curve would send it
+    // away before bringing it back — simply takes the corner instead.
     var tail = pts.length ? pts[pts.length - 1] : { x: a.x, y: a.y };
 
     // The direction the aircraft will be travelling as it reaches the tip. Very
@@ -1183,7 +1186,7 @@ body.is-portrait .rotate-hint { display: block; }
     var joinTurn = Math.abs(angleDelta(incoming, ap.angle));
     var curved = false;
 
-    if (joinTurn > MAX_JOIN_TURN) {
+    if (useArc && joinTurn > MAX_JOIN_TURN) {
       // Curve onto the strip with an arc that finishes at the threshold already
       // pointing down it. The arc is tangent to the way the aircraft is coming
       // in at one end and to the runway at the other, so both joins are smooth.
@@ -1247,9 +1250,9 @@ body.is-portrait .rotate-hint { display: block; }
   /**
    * Snap the tail of an aircraft's path onto a landing zone.
    *
-   * A strip can be landed on at either tip, so both are costed and the better
-   * one wins — mostly the nearer, but a route that would need the aircraft to
-   * double back is penalised so it loses to the longer, straighter one.
+   * A strip is one-way, so there is a single candidate. The comparison loop is
+   * kept because it is what would choose between them if a map ever wanted a
+   * strip usable from both ends.
    */
   Game.prototype.assignLanding = function (a, zone) {
     a.landingZone = zone;
@@ -1269,12 +1272,15 @@ body.is-portrait .rotate-hint { display: block; }
     var drawn = a.path;
     var best = null, bestAp = null, bestCost = Infinity;
     for (var i = 0; i < zone.approaches.length; i++) {
-      var candidate = this.buildApproach(a, zone, zone.approaches[i], drawn);
-      var cost = candidate.length + candidate.worstTurn * TURN_COST;
-      if (cost < bestCost) {
-        bestCost = cost;
-        best = candidate;
-        bestAp = zone.approaches[i];
+      for (var arc = 0; arc < 2; arc++) {
+        var candidate = this.buildApproach(a, zone, zone.approaches[i], drawn, arc === 1);
+        var cost = candidate.length + candidate.worstTurn * TURN_COST +
+                   (candidate.worstTurn > HAIRPIN ? HAIRPIN_PENALTY : 0);
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = candidate;
+          bestAp = zone.approaches[i];
+        }
       }
     }
     a.approach = bestAp;
@@ -2012,23 +2018,19 @@ body.is-portrait .rotate-hint { display: block; }
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Threshold bars and aiming points at both ends — the strip is landed on
-      // from whichever side an aircraft arrives.
+      // Threshold bars and aiming points at the landing end only: the strip is
+      // one-way and this is the end aircraft touch down on.
       var bars = 4, bh = Wd * 0.13, gap = Wd * 0.075;
-      for (var end = -1; end <= 1; end += 2) {
-        for (var b = 0; b < bars; b++) {
-          var yy = -((bars - 1) / 2) * (bh + gap) + b * (bh + gap);
-          ctx.fillStyle = mark;
-          ctx.fillRect(end * (L / 2) - (end > 0 ? Wd * 0.66 : -Wd * 0.16),
-                       yy - bh / 2, Wd * 0.5, bh);
-        }
-        ctx.globalAlpha = 0.7;
+      for (var b = 0; b < bars; b++) {
+        var yy = -((bars - 1) / 2) * (bh + gap) + b * (bh + gap);
         ctx.fillStyle = mark;
-        var ax = end * (L / 2) - (end > 0 ? Wd * 1.92 : -Wd * 1.5);
-        ctx.fillRect(ax, -Wd * 0.30, Wd * 0.42, Wd * 0.10);
-        ctx.fillRect(ax, Wd * 0.20, Wd * 0.42, Wd * 0.10);
-        ctx.globalAlpha = 1;
+        ctx.fillRect(-L / 2 + Wd * 0.16, yy - bh / 2, Wd * 0.5, bh);
       }
+      ctx.globalAlpha = 0.7;
+      ctx.fillStyle = mark;
+      ctx.fillRect(-L / 2 + Wd * 1.5, -Wd * 0.30, Wd * 0.42, Wd * 0.10);
+      ctx.fillRect(-L / 2 + Wd * 1.5, Wd * 0.20, Wd * 0.42, Wd * 0.10);
+      ctx.globalAlpha = 1;
     }
     ctx.restore();
 
@@ -2037,10 +2039,7 @@ body.is-portrait .rotate-hint { display: block; }
     }
   }
 
-  /**
-   * Chevrons leading into a threshold. A strip is usable from either end, so
-   * this is drawn once per approach and each set points inward.
-   */
+  /** Chevrons leading into the threshold, showing the one landing direction. */
   function drawApproachChevrons(ctx, ap, color, ui) {
     ui = ui || 1;
     ctx.save();
@@ -2750,13 +2749,11 @@ body.is-portrait .rotate-hint { display: block; }
           ctx.globalAlpha = 0.55;
           ctx.setLineDash([10 * this.ui, 8 * this.ui]);
           ctx.lineWidth = 3 * this.ui;
-          // mark the two tips an aircraft can touch down on
+          // mark the threshold aircraft touch down on
           ctx.setLineDash([]);
-          for (var t = -1; t <= 1; t += 2) {
-            ctx.beginPath();
-            ctx.arc(t * z.length / 2, 0, 9 * this.ui, 0, TAU);
-            ctx.stroke();
-          }
+          ctx.beginPath();
+          ctx.arc(-z.length / 2, 0, 9 * this.ui, 0, TAU);
+          ctx.stroke();
           ctx.setLineDash([]);
         }
       }
