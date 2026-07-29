@@ -47,10 +47,11 @@ wider in landscape.
   takes. Airliners and jumbos share the main runway, light aircraft use the
   short strip, helicopters the helipad, seaplanes the water lane. Drag to the
   wrong zone and the route simply will not stick.
-- **Approaches line up for you.** Chevrons at both ends of a strip show the two
-  directions it can be landed in. The tail of your path snaps onto whichever
-  approach is closer, so aircraft always touch down straight along the strip
-  and arriving from the far side costs a turn, not a lap of the map.
+- **Land anywhere on the strip.** Drag onto a runway and the aircraft touches
+  down where your line meets it, then rolls out to the end — the same way a
+  helicopter simply arrives on the pad. There is no approach corridor to fly out
+  to and no lining up from a distance; a strip works from either end, so the
+  aircraft always takes the nearer one.
 - **Nothing leaves the map.** An aircraft with no route flies straight on and
   turns back when it reaches the boundary. Draw a loop to park one in a holding
   pattern while you deal with something more urgent.

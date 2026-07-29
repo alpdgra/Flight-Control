@@ -179,12 +179,18 @@ test('routing onto a runway does not double the path back on itself', () => {
   assert.ok(sharpestTurn(a) < 135,
     `path reverses (${sharpestTurn(a).toFixed(0)}deg turn)`);
 
-  // and nothing drawn should survive beyond the approach fix
+  // The drawn tail must have been trimmed off the strip: everything before the
+  // touchdown point is still outside it.
   for (let i = 0; i < a.path.length - 2; i++) {
-    const ap = a.approach;
-    const along = (a.path[i].x - ap.fx) * ap.dx + (a.path[i].y - ap.fy) * ap.dy;
-    assert.ok(along <= 0, `waypoint ${i} sits ${along.toFixed(0)} past the approach fix`);
+    assert.ok(!FC.zoneCaptures(runway, a.path[i].x, a.path[i].y),
+      `waypoint ${i} is still sitting on the runway`);
   }
+  // and the touchdown point is on the strip itself, not out in front of it
+  const touch = a.path[a.path.length - 2];
+  const ap = a.approach;
+  const along = (touch.x - ap.tx) * ap.dx + (touch.y - ap.ty) * ap.dy;
+  assert.ok(along >= -1e-6 && along <= runway.length,
+    `touchdown sits ${along.toFixed(0)} along a ${runway.length.toFixed(0)} strip`);
 });
 
 /** Total distance an aircraft will fly along its current route. */
@@ -194,11 +200,11 @@ function routeLength(a) {
   return total;
 }
 
-/** The shortest route physically possible: to the nearest end, then down it. */
+/** The shortest route physically possible: to the nearest tip, then down it. */
 function shortestPossible(a, zone) {
   const nearest = Math.min.apply(null,
-    zone.approaches.map(ap => dist(a.x, a.y, ap.fx, ap.fy)));
-  return nearest + FC.APPROACH_LEN + zone.length;
+    zone.approaches.map(ap => dist(a.x, a.y, ap.tx, ap.ty)));
+  return nearest + zone.length;
 }
 
 test('a strip is landed on from whichever end the aircraft arrives at', () => {
@@ -235,11 +241,11 @@ test('arriving from the far side does not cost a lap of the map', () => {
 });
 
 test('an aircraft already on the approach is not sent backwards first', () => {
-  // Sitting a few units short of the fix must not produce a hop back to it.
+  // Sitting a few units short of the tip must not produce a hop back to it.
   const g = soloGame();
   const runway = g.zones.find(z => z.id === 'main');
   const ap = runway.approaches[0];
-  const a = inbound(g, 'jet', ap.fx - 12 * ap.dx, ap.fy - 12 * ap.dy);
+  const a = inbound(g, 'jet', ap.tx - 12 * ap.dx, ap.ty - 12 * ap.dy);
   assert.ok(route(g, a, runway.x, runway.y));
   assert.ok(sharpestTurn(a) < 135,
     `path kinks backwards (${sharpestTurn(a).toFixed(0)}deg turn)`);
@@ -269,7 +275,7 @@ test('every approach on every map is flyable without doubling back', () => {
           if (z.kind !== 'helipad') {
             const flown = routeLength(a);
             const floor = shortestPossible(a, z);
-            assert.ok(flown < floor + 950,
+            assert.ok(flown < floor + 150,
               `${where}: flew ${flown.toFixed(0)}, ${(flown - floor).toFixed(0)} more than needed`);
           }
           assert.strictEqual(run(g, 200).filter(e => e.type === 'landed').length, 1,
@@ -673,10 +679,11 @@ test('every map is playable: each aircraft in its pool has a zone', () => {
       if (z.kind !== 'helipad') {
         // the snapped approach fix must sit inside the world, otherwise
         // aircraft would have to fly off-map to line up
-        // at least one end must be approachable from inside the map
-        assert.ok(z.approaches.some(ap =>
-          ap.fx > -10 && ap.fx < g.W + 10 && ap.fy > -10 && ap.fy < g.H + 10),
-          `${map.id}/${z.id} has no approach inside the map`);
+        // both tips must sit inside the map so either can be flown to
+        for (const ap of z.approaches) {
+          assert.ok(ap.tx > -10 && ap.tx < g.W + 10 && ap.ty > -10 && ap.ty < g.H + 10,
+            `${map.id}/${z.id} has a tip off-map`);
+        }
       }
     }
   }
