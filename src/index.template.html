@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Flight Control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1">
+<meta name="description" content="Land the traffic. Draw a flight path from each aircraft to its matching runway, strip, helipad or water lane — and never let two of them touch.">
+<meta name="theme-color" content="#08111a">
+<meta name="color-scheme" content="dark">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Flight Control">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192">
+<style>/*__CSS__*/</style>
+</head>
+<body data-screen="menu">
+
+<canvas id="stage"></canvas>
+
+<!-- in-game heads-up display -->
+<div id="hud" class="is-hidden">
+  <div class="hud-card">
+    <span class="hud-label">Landed</span>
+    <span class="hud-value" id="score">0</span>
+  </div>
+  <div class="hud-card">
+    <span class="hud-label">Best</span>
+    <span class="hud-value" id="best" style="font-size:18px">0</span>
+  </div>
+  <div class="hud-spacer"></div>
+  <div id="map-name">Airfield</div>
+  <button class="icon-btn" id="sound-btn" aria-label="Mute sound">&#128266;</button>
+  <button class="icon-btn" id="pause-btn" aria-label="Pause">&#10073;&#10073;</button>
+</div>
+
+<div id="hint">Drag from an aircraft to the landing zone that matches its colour.</div>
+
+<!-- ------------------------------------------------------------------ menu -->
+<div class="overlay is-open" data-screen="menu">
+  <div class="panel">
+    <h1 class="title">Flight Control</h1>
+    <p class="subtitle">
+      You are the tower. Draw a path from every arriving aircraft to the landing
+      zone that matches it&nbsp;&mdash; and never let two of them touch.
+    </p>
+
+    <div class="section-title">Choose an airport</div>
+    <div id="maps"></div>
+
+    <div class="row">
+      <button class="btn" id="play-btn">Take the tower</button>
+      <button class="btn ghost" id="help-btn">How to play</button>
+    </div>
+    <div class="rotate-hint">Turn your device sideways for a wider airspace.</div>
+  </div>
+</div>
+
+<!-- ------------------------------------------------------------------ help -->
+<div class="overlay" data-screen="help">
+  <div class="panel">
+    <h2 class="title" style="font-size:clamp(26px,4.4vw,38px)">How to play</h2>
+
+    <div class="section-title">The job</div>
+    <ol class="steps">
+      <li><b>Draw a route.</b> Press an aircraft and drag a line to its landing
+          zone. Release, and it flies the line you drew.</li>
+      <li><b>Match the colours.</b> Each zone only takes the aircraft shown on
+          its badge. A route to the wrong zone simply will not stick.</li>
+      <li><b>Runways are one-way.</b> Your path is lined up with the approach
+          automatically, so aircraft always land into the arrow.</li>
+      <li><b>Nothing leaves.</b> An aircraft with no route flies straight on and
+          turns back at the boundary. Draw loops to park it while you deal with
+          traffic elsewhere.</li>
+      <li><b>Keep them apart.</b> A red ring means two aircraft are closing. If
+          they touch, the shift is over.</li>
+    </ol>
+
+    <div class="section-title">Who lands where</div>
+    <div id="legend"></div>
+
+    <p class="subtitle" style="margin-top:20px;font-size:14px">
+      Straight lines are quick, sharp corners are quicker than curves, and the
+      fast jets are always the ones to move out of the way.
+    </p>
+
+    <div class="row">
+      <button class="btn" id="help-close">Got it</button>
+    </div>
+  </div>
+</div>
+
+<!-- ----------------------------------------------------------------- paused -->
+<div class="overlay" data-screen="paused">
+  <div class="panel narrow">
+    <h2 class="title" style="font-size:clamp(28px,5vw,42px)">Paused</h2>
+    <p class="subtitle">The airspace is holding.</p>
+    <div class="row">
+      <button class="btn" id="resume-btn">Resume</button>
+      <button class="btn ghost" id="pause-help">How to play</button>
+      <button class="btn ghost" id="pause-quit">Quit to menu</button>
+    </div>
+  </div>
+</div>
+
+<!-- -------------------------------------------------------------- game over -->
+<div class="overlay" data-screen="over">
+  <div class="panel narrow">
+    <h2 class="title" style="font-size:clamp(28px,5vw,42px)">Mid-air collision</h2>
+    <div class="final">
+      <span class="final-score" id="final-score">0</span>
+      <span class="final-unit">landed</span>
+    </div>
+    <div class="final-meta"><span id="final-map">Airfield</span> &middot; best <span id="final-best">0</span></div>
+    <div id="record">New record</div>
+    <div class="medal" id="medal"></div>
+    <div id="next-medal"></div>
+    <div class="row">
+      <button class="btn" id="again-btn">Fly again</button>
+      <button class="btn ghost" id="change-btn">Change airport</button>
+    </div>
+  </div>
+</div>
+
+<script>/*__JS__*/</script>
+</body>
+</html>
