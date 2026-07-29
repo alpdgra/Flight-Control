@@ -181,7 +181,7 @@ test('routing onto a runway does not double the path back on itself', () => {
 
   // The aircraft enters at a threshold and runs the whole strip: the last two
   // waypoints are a tip and the far end.
-  entersAtATip(a, runway);
+  entersAtATip(a);
 });
 
 /** Total distance an aircraft will fly along its current route. */
@@ -192,7 +192,7 @@ function routeLength(a) {
 }
 
 /** An aircraft must enter at a threshold and traverse the whole strip. */
-function entersAtATip(a, zone) {
+function entersAtATip(a) {
   const ap = a.approach;
   const end = a.path[a.path.length - 1];
   assert.ok(dist(end.x, end.y, ap.ex, ap.ey) < 1e-6, 'does not roll out to the far end');
@@ -277,7 +277,7 @@ test('every approach on every map is flyable without doubling back', () => {
           assert.ok(sharpestTurn(a) < 135,
             `${where}: path reverses (${sharpestTurn(a).toFixed(0)}deg)`);
           if (z.kind !== 'helipad') {
-            entersAtATip(a, z);
+            entersAtATip(a);
             const flown = routeLength(a);
             const floor = shortestPossible(a, z);
             assert.ok(flown < floor + 800,
