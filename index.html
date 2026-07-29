@@ -496,8 +496,9 @@ body.is-portrait .rotate-hint { display: block; }
           zone. Release, and it flies the line you drew.</li>
       <li><b>Match the colours.</b> Each zone only takes the aircraft shown on
           its badge. A route to the wrong zone simply will not stick.</li>
-      <li><b>Runways are one-way.</b> Your path is lined up with the approach
-          automatically, so aircraft always land into the arrow.</li>
+      <li><b>Approaches line up for you.</b> A strip is landed on from whichever
+          end an aircraft arrives at, and the last stretch of your path snaps
+          onto that approach so it always touches down straight.</li>
       <li><b>Nothing leaves.</b> An aircraft with no route flies straight on and
           turns back at the boundary. Draw loops to park it while you deal with
           traffic elsewhere.</li>
@@ -678,8 +679,30 @@ body.is-portrait .rotate-hint { display: block; }
   // -------------------------------------------------------------------- zones
 
   /**
+   * One usable direction along a strip: where the approach starts, where the
+   * wheels touch, and where the rollout finishes.
+   */
+  function approach(idx, cx, cy, angle, half) {
+    var dx = Math.cos(angle), dy = Math.sin(angle);
+    return {
+      idx: idx,
+      angle: angle,
+      dx: dx, dy: dy,
+      // threshold (touchdown point) and rollout end
+      tx: cx - dx * half, ty: cy - dy * half,
+      ex: cx + dx * half, ey: cy + dy * half,
+      // where a snapped approach begins
+      fx: cx - dx * (half + APPROACH_LEN),
+      fy: cy - dy * (half + APPROACH_LEN)
+    };
+  }
+
+  /**
    * Build a linear landing zone (runway or water lane).
-   * `angle` is the heading aircraft travel while landing.
+   *
+   * A strip is usable in both directions, exactly like a real runway numbered
+   * at both ends. Aircraft take whichever end they arrive at, so arriving from
+   * the "wrong" side costs a turn rather than a lap of the map.
    */
   function strip(opts) {
     var dx = Math.cos(opts.angle), dy = Math.sin(opts.angle);
@@ -695,12 +718,10 @@ body.is-portrait .rotate-hint { display: block; }
       width: opts.width,
       accepts: opts.accepts,
       color: opts.color,
-      // threshold (touchdown point) and rollout end
-      tx: opts.x - dx * half, ty: opts.y - dy * half,
-      ex: opts.x + dx * half, ey: opts.y + dy * half,
-      // where a snapped approach begins
-      fx: opts.x - dx * (half + APPROACH_LEN),
-      fy: opts.y - dy * (half + APPROACH_LEN)
+      approaches: [
+        approach(0, opts.x, opts.y, opts.angle, half),
+        approach(1, opts.x, opts.y, opts.angle + Math.PI, half)
+      ]
     };
   }
 
@@ -853,6 +874,7 @@ body.is-portrait .rotate-hint { display: block; }
     this.path = [];           // remaining waypoints, path[0] is the next one
     this.trail = [];          // recent positions, renderer only
     this.landingZone = null;
+    this.approach = null;      // which end of the strip it is landing on
     this.drawing = false;
     this.entering = true;     // still crossing in from off-map
     this.state = 'flying';    // flying | landing | done
@@ -865,6 +887,7 @@ body.is-portrait .rotate-hint { display: block; }
     this.fade = 1;
     this._prevPath = null;
     this._prevZone = null;
+    this._prevAp = null;
     this._dragDist = 0;
   }
 
@@ -1042,9 +1065,11 @@ body.is-portrait .rotate-hint { display: block; }
     if (!a) return null;
     a._prevPath = a.path;
     a._prevZone = a.landingZone;
+    a._prevAp = a.approach;
     a._dragDist = 0;
     a.path = [];
     a.landingZone = null;
+    a.approach = null;
     a.drawing = true;
     this.drags[pointerId] = a;
     return a;
@@ -1076,10 +1101,11 @@ body.is-portrait .rotate-hint { display: block; }
     if (a._dragDist < TAP_SLOP && a.path.length === 0) {
       a.path = a._prevPath || [];
       a.landingZone = a._prevZone || null;
-      a._prevPath = a._prevZone = null;
+      a.approach = a._prevAp || null;
+      a._prevPath = a._prevZone = a._prevAp = null;
       return null;
     }
-    a._prevPath = a._prevZone = null;
+    a._prevPath = a._prevZone = a._prevAp = null;
 
     var zone = this.zoneAt(x, y, a.type);
     if (zone) {
@@ -1097,7 +1123,8 @@ body.is-portrait .rotate-hint { display: block; }
     a.drawing = false;
     a.path = a._prevPath || [];
     a.landingZone = a._prevZone || null;
-    a._prevPath = a._prevZone = null;
+    a.approach = a._prevAp || null;
+    a._prevPath = a._prevZone = a._prevAp = null;
   };
 
   /** The zone under a point that will accept `typeId`, if any. */
@@ -1111,12 +1138,86 @@ body.is-portrait .rotate-hint { display: block; }
   };
 
   /**
-   * Snap the tail of an aircraft's path onto a zone's approach.
+   * Work out the route for landing on one particular end of a strip: trim the
+   * drawn tail back to the approach, then join it. Returns the waypoints and
+   * how far the aircraft would fly, so both ends can be compared.
+   */
+  Game.prototype.buildApproach = function (a, ap, drawn) {
+    var pts = drawn.slice();
+
+    // The player releases *on* the strip, so the drawn line always overshoots
+    // the point where the approach begins. Drop everything past it, or the
+    // aircraft overflies the runway and doubles back to line up.
+    while (pts.length) {
+      var p = pts[pts.length - 1];
+      if ((p.x - ap.fx) * ap.dx + (p.y - ap.fy) * ap.dy > 0) pts.pop();
+      else break;
+    }
+
+    // What the path now ends at may still sit ahead of the fix. Joining from
+    // there can mean reversing down the centreline, so check the turn it would
+    // demand; if it is too tight, fly a circuit instead.
+    var tail = pts.length ? pts[pts.length - 1] : { x: a.x, y: a.y };
+    var ahead = (tail.x - ap.fx) * ap.dx + (tail.y - ap.fy) * ap.dy;
+    var reach = dist(tail.x, tail.y, ap.fx, ap.fy);
+    var joinTurn = reach < 30 ? 0
+      : Math.abs(angleDelta(Math.atan2(ap.fy - tail.y, ap.fx - tail.x), ap.angle));
+
+    if (ahead > 0 && joinTurn > MAX_JOIN_TURN) {
+      var nx = -ap.dy, ny = ap.dx;
+      var lat = (tail.x - ap.fx) * nx + (tail.y - ap.fy) * ny;
+      var side = lat >= 0 ? 1 : -1;
+      if (Math.abs(lat) < 24) {
+        // Sitting on the centreline: break toward whichever side has room.
+        var probeX = ap.fx + nx * CIRCUIT_OFFSET;
+        var probeY = ap.fy + ny * CIRCUIT_OFFSET;
+        side = (probeX > CIRCUIT_OFFSET && probeX < this.W - CIRCUIT_OFFSET &&
+                probeY > CIRCUIT_OFFSET && probeY < this.H - CIRCUIT_OFFSET) ? 1 : -1;
+      }
+      var off = side * Math.max(CIRCUIT_OFFSET, Math.abs(lat));
+      var self = this;
+      /* A point in the strip's own frame: `along` measured from the approach
+         fix in the landing direction, `lateral` out to one side. */
+      var placeAt = function (along, lateral) {
+        return {
+          x: clamp(ap.fx + ap.dx * along + nx * lateral, 12, self.W - 12),
+          y: clamp(ap.fy + ap.dy * along + ny * lateral, 12, self.H - 12)
+        };
+      };
+      // An aircraft already out on the downwind side lands its crosswind point
+      // on top of itself; a zero-length segment has no meaningful heading, so
+      // only take waypoints that actually go somewhere.
+      var addLeg = function (pt) {
+        var prev = pts.length ? pts[pts.length - 1] : { x: a.x, y: a.y };
+        if (dist2(pt.x, pt.y, prev.x, prev.y) > 25 * 25) pts.push(pt);
+      };
+      // A full circuit: out to the side, back down past the fix, then across
+      // onto the extended centreline, so every corner is a right angle.
+      addLeg(placeAt(ahead, off));            // crosswind
+      addLeg(placeAt(-DOWNWIND_LEG, off));    // downwind, past the fix
+      addLeg(placeAt(-DOWNWIND_LEG, 0));      // base, onto the centreline
+    }
+
+    // Already sitting on the approach: inserting the fix would only add a
+    // meaningless hop backwards before the aircraft could set off down the
+    // strip, which reads as a kink in the drawn line.
+    if (reach >= 30) pts.push({ x: ap.fx, y: ap.fy });
+    pts.push({ x: ap.ex, y: ap.ey });
+
+    var length = 0, px = a.x, py = a.y;
+    for (var i = 0; i < pts.length; i++) {
+      length += dist(px, py, pts[i].x, pts[i].y);
+      px = pts[i].x; py = pts[i].y;
+    }
+    return { points: pts, length: length };
+  };
+
+  /**
+   * Snap the tail of an aircraft's path onto a landing zone.
    *
-   * The player drags *onto* the zone, so the drawn line always ends on top of
-   * it — past the point where the approach begins. Those trailing points have
-   * to go, otherwise the aircraft overflies the runway, doubles back to the
-   * approach fix, and lands on the third pass.
+   * A strip can be used from either end, so both are costed and the shorter
+   * route wins. That is what keeps an aircraft arriving from the far side from
+   * flying all the way around to reach a single fixed approach.
    */
   Game.prototype.assignLanding = function (a, zone) {
     a.landingZone = zone;
@@ -1128,67 +1229,22 @@ body.is-portrait .rotate-hint { display: block; }
         if (dist2(q.x, q.y, zone.x, zone.y) <= zone.radius * zone.radius) a.path.pop();
         else break;
       }
+      a.approach = null;
       a.path.push({ x: zone.x, y: zone.y });
       return;
     }
 
-    // Trim back to the last drawn point that is still short of the approach
-    // fix, measured along the runway's own axis.
-    while (a.path.length) {
-      var p = a.path[a.path.length - 1];
-      if ((p.x - zone.fx) * zone.dx + (p.y - zone.fy) * zone.dy > 0) a.path.pop();
-      else break;
-    }
-
-    // Whatever the path now ends at may still sit ahead of the fix — the
-    // aircraft itself might be past the runway. Flying straight from there to
-    // the fix can mean reversing back down the centreline, so check the turn it
-    // would demand; if it is too tight, go round a circuit instead.
-    var tail = a.path.length ? a.path[a.path.length - 1] : { x: a.x, y: a.y };
-    var ahead = (tail.x - zone.fx) * zone.dx + (tail.y - zone.fy) * zone.dy;
-    var reach = dist(tail.x, tail.y, zone.fx, zone.fy);
-    var joinTurn = reach < 30 ? 0
-      : Math.abs(angleDelta(Math.atan2(zone.fy - tail.y, zone.fx - tail.x), zone.angle));
-
-    if (ahead > 0 && joinTurn > MAX_JOIN_TURN) {
-      var nx = -zone.dy, ny = zone.dx;
-      var lat = (tail.x - zone.fx) * nx + (tail.y - zone.fy) * ny;
-      var side = lat >= 0 ? 1 : -1;
-      if (Math.abs(lat) < 24) {
-        // Sitting on the centreline: break toward whichever side has room.
-        var probeX = zone.fx + nx * CIRCUIT_OFFSET;
-        var probeY = zone.fy + ny * CIRCUIT_OFFSET;
-        side = (probeX > CIRCUIT_OFFSET && probeX < this.W - CIRCUIT_OFFSET &&
-                probeY > CIRCUIT_OFFSET && probeY < this.H - CIRCUIT_OFFSET) ? 1 : -1;
+    var drawn = a.path;
+    var best = null, bestAp = null;
+    for (var i = 0; i < zone.approaches.length; i++) {
+      var candidate = this.buildApproach(a, zone.approaches[i], drawn);
+      if (!best || candidate.length < best.length) {
+        best = candidate;
+        bestAp = zone.approaches[i];
       }
-      var off = side * Math.max(CIRCUIT_OFFSET, Math.abs(lat));
-      var self = this;
-      /* A point in the runway's own frame: `along` measured from the approach
-         fix in the landing direction, `lateral` out to one side. */
-      var placeAt = function (along, lateral) {
-        return {
-          x: clamp(zone.fx + zone.dx * along + nx * lateral, 12, self.W - 12),
-          y: clamp(zone.fy + zone.dy * along + ny * lateral, 12, self.H - 12)
-        };
-      };
-      // An aircraft already out on the downwind side lands its crosswind point
-      // on top of itself; a zero-length segment has no meaningful heading, so
-      // only take waypoints that actually go somewhere.
-      var addLeg = function (pt) {
-        var prev = a.path.length ? a.path[a.path.length - 1] : { x: a.x, y: a.y };
-        if (dist2(pt.x, pt.y, prev.x, prev.y) > 25 * 25) a.path.push(pt);
-      };
-      // A full circuit: out to the side, back down past the fix, then across
-      // onto the extended centreline. Every corner is a right angle, and the
-      // downwind leg always has length because it runs past the fix rather
-      // than stopping abeam it.
-      addLeg(placeAt(ahead, off));                // crosswind
-      addLeg(placeAt(-DOWNWIND_LEG, off));        // downwind, past the fix
-      addLeg(placeAt(-DOWNWIND_LEG, 0));          // base, onto the centreline
     }
-
-    a.path.push({ x: zone.fx, y: zone.fy });
-    a.path.push({ x: zone.ex, y: zone.ey });
+    a.approach = bestAp;
+    a.path = best.points;
   };
 
   // ---- simulation ----------------------------------------------------------
@@ -1317,8 +1373,10 @@ body.is-portrait .rotate-hint { display: block; }
     // rollout end) do we look for the threshold, otherwise a path that happens
     // to cross the runway earlier would trigger a false touchdown.
     if (a.path.length <= 1) {
-      var along = (a.x - z.tx) * z.dx + (a.y - z.ty) * z.dy;
-      var across = Math.abs(-(a.x - z.x) * z.dy + (a.y - z.y) * z.dx);
+      var ap = a.approach;
+      if (!ap) return;
+      var along = (a.x - ap.tx) * ap.dx + (a.y - ap.ty) * ap.dy;
+      var across = Math.abs(-(a.x - z.x) * ap.dy + (a.y - z.y) * ap.dx);
       if (along >= 0 && across <= z.width) this.beginLanding(a, z);
     }
   };
@@ -1334,10 +1392,11 @@ body.is-portrait .rotate-hint { display: block; }
       a.landTo = { x: z.x, y: z.y };
     } else {
       a.landDur = 0.78;
-      a.heading = z.angle;
-      a.drawHeading = z.angle;
+      var ap = a.approach || z.approaches[0];
+      a.heading = ap.angle;
+      a.drawHeading = ap.angle;
       a.landFrom = { x: a.x, y: a.y };
-      a.landTo = { x: z.ex, y: z.ey };
+      a.landTo = { x: ap.ex, y: ap.ey };
     }
     this.score++;
     this.landedByType[a.type] = (this.landedByType[a.type] || 0) + 1;
@@ -1429,7 +1488,12 @@ body.is-portrait .rotate-hint { display: block; }
       // re-point any assigned landing at the rebuilt zone
       if (a.landingZone) {
         for (var z = 0; z < this.zones.length; z++) {
-          if (this.zones[z].id === a.landingZone.id) { a.landingZone = this.zones[z]; break; }
+          if (this.zones[z].id !== a.landingZone.id) continue;
+          a.landingZone = this.zones[z];
+          if (a.approach && this.zones[z].approaches) {
+            a.approach = this.zones[z].approaches[a.approach.idx];
+          }
+          break;
         }
       }
     }
@@ -1912,33 +1976,42 @@ body.is-portrait .rotate-hint { display: block; }
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // threshold bars at the approach end
+      // Threshold bars and aiming points at both ends — the strip is landed on
+      // from whichever side an aircraft arrives.
       var bars = 4, bh = Wd * 0.13, gap = Wd * 0.075;
-      for (var b = 0; b < bars; b++) {
-        var yy = -((bars - 1) / 2) * (bh + gap) + b * (bh + gap);
+      for (var end = -1; end <= 1; end += 2) {
+        for (var b = 0; b < bars; b++) {
+          var yy = -((bars - 1) / 2) * (bh + gap) + b * (bh + gap);
+          ctx.fillStyle = mark;
+          ctx.fillRect(end * (L / 2) - (end > 0 ? Wd * 0.66 : -Wd * 0.16),
+                       yy - bh / 2, Wd * 0.5, bh);
+        }
+        ctx.globalAlpha = 0.7;
         ctx.fillStyle = mark;
-        ctx.fillRect(-L / 2 + Wd * 0.16, yy - bh / 2, Wd * 0.5, bh);
+        var ax = end * (L / 2) - (end > 0 ? Wd * 1.92 : -Wd * 1.5);
+        ctx.fillRect(ax, -Wd * 0.30, Wd * 0.42, Wd * 0.10);
+        ctx.fillRect(ax, Wd * 0.20, Wd * 0.42, Wd * 0.10);
+        ctx.globalAlpha = 1;
       }
-      // touchdown aiming point
-      ctx.globalAlpha = 0.7;
-      ctx.fillStyle = mark;
-      ctx.fillRect(-L / 2 + Wd * 1.5, -Wd * 0.30, Wd * 0.42, Wd * 0.10);
-      ctx.fillRect(-L / 2 + Wd * 1.5, Wd * 0.20, Wd * 0.42, Wd * 0.10);
-      ctx.globalAlpha = 1;
     }
     ctx.restore();
 
-    drawApproachChevrons(ctx, z, ui);
+    for (var ai = 0; ai < z.approaches.length; ai++) {
+      drawApproachChevrons(ctx, z.approaches[ai], z.color, ui);
+    }
   }
 
-  /** Chevrons leading into the threshold, so the landing direction is obvious. */
-  function drawApproachChevrons(ctx, z, ui) {
+  /**
+   * Chevrons leading into a threshold. A strip is usable from either end, so
+   * this is drawn once per approach and each set points inward.
+   */
+  function drawApproachChevrons(ctx, ap, color, ui) {
     ui = ui || 1;
     ctx.save();
-    ctx.translate(z.tx, z.ty);
-    ctx.rotate(z.angle);
+    ctx.translate(ap.tx, ap.ty);
+    ctx.rotate(ap.angle);
     ctx.globalAlpha = 0.32;
-    ctx.strokeStyle = z.color;
+    ctx.strokeStyle = color;
     ctx.lineWidth = 4 * ui;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -2644,6 +2717,8 @@ body.is-portrait .rotate-hint { display: block; }
           ctx.beginPath();
           ctx.moveTo(-z.length / 2 - FC.APPROACH_LEN, 0);
           ctx.lineTo(-z.length / 2, 0);
+          ctx.moveTo(z.length / 2 + FC.APPROACH_LEN, 0);
+          ctx.lineTo(z.length / 2, 0);
           ctx.stroke();
           ctx.setLineDash([]);
         }

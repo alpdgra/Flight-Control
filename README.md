@@ -47,9 +47,10 @@ wider in landscape.
   takes. Airliners and jumbos share the main runway, light aircraft use the
   short strip, helicopters the helipad, seaplanes the water lane. Drag to the
   wrong zone and the route simply will not stick.
-- **Runways are one-way.** Chevrons show the approach direction. Your path is
-  automatically lined up with it, so aircraft always land into the arrow no
-  matter where you drew from.
+- **Approaches line up for you.** Chevrons at both ends of a strip show the two
+  directions it can be landed in. The tail of your path snaps onto whichever
+  approach is closer, so aircraft always touch down straight along the strip
+  and arriving from the far side costs a turn, not a lap of the map.
 - **Nothing leaves the map.** An aircraft with no route flies straight on and
   turns back when it reaches the boundary. Draw a loop to park one in a holding
   pattern while you deal with something more urgent.
