@@ -11,6 +11,9 @@
 })(typeof self !== 'undefined' ? self : this, function (FC) {
   'use strict';
 
+  // How far in front of each tip the landing chevrons are drawn.
+  var CHEVRON_LEAD = 78;
+
   var clamp = FC.util.clamp;
   var lerp = FC.util.lerp;
   var mulberry32 = FC.util.mulberry32;
@@ -448,38 +451,47 @@
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // threshold bars at the approach end
+      // Threshold bars and aiming points at both ends — the strip is landed on
+      // from whichever side an aircraft arrives.
       var bars = 4, bh = Wd * 0.13, gap = Wd * 0.075;
-      for (var b = 0; b < bars; b++) {
-        var yy = -((bars - 1) / 2) * (bh + gap) + b * (bh + gap);
+      for (var end = -1; end <= 1; end += 2) {
+        for (var b = 0; b < bars; b++) {
+          var yy = -((bars - 1) / 2) * (bh + gap) + b * (bh + gap);
+          ctx.fillStyle = mark;
+          ctx.fillRect(end * (L / 2) - (end > 0 ? Wd * 0.66 : -Wd * 0.16),
+                       yy - bh / 2, Wd * 0.5, bh);
+        }
+        ctx.globalAlpha = 0.7;
         ctx.fillStyle = mark;
-        ctx.fillRect(-L / 2 + Wd * 0.16, yy - bh / 2, Wd * 0.5, bh);
+        var ax = end * (L / 2) - (end > 0 ? Wd * 1.92 : -Wd * 1.5);
+        ctx.fillRect(ax, -Wd * 0.30, Wd * 0.42, Wd * 0.10);
+        ctx.fillRect(ax, Wd * 0.20, Wd * 0.42, Wd * 0.10);
+        ctx.globalAlpha = 1;
       }
-      // touchdown aiming point
-      ctx.globalAlpha = 0.7;
-      ctx.fillStyle = mark;
-      ctx.fillRect(-L / 2 + Wd * 1.5, -Wd * 0.30, Wd * 0.42, Wd * 0.10);
-      ctx.fillRect(-L / 2 + Wd * 1.5, Wd * 0.20, Wd * 0.42, Wd * 0.10);
-      ctx.globalAlpha = 1;
     }
     ctx.restore();
 
-    drawApproachChevrons(ctx, z, ui);
+    for (var ai = 0; ai < z.approaches.length; ai++) {
+      drawApproachChevrons(ctx, z.approaches[ai], z.color, ui);
+    }
   }
 
-  /** Chevrons leading into the threshold, so the landing direction is obvious. */
-  function drawApproachChevrons(ctx, z, ui) {
+  /**
+   * Chevrons leading into a threshold. A strip is usable from either end, so
+   * this is drawn once per approach and each set points inward.
+   */
+  function drawApproachChevrons(ctx, ap, color, ui) {
     ui = ui || 1;
     ctx.save();
-    ctx.translate(z.tx, z.ty);
-    ctx.rotate(z.angle);
+    ctx.translate(ap.tx, ap.ty);
+    ctx.rotate(ap.angle);
     ctx.globalAlpha = 0.32;
-    ctx.strokeStyle = z.color;
+    ctx.strokeStyle = color;
     ctx.lineWidth = 4 * ui;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (var i = 0; i < 3; i++) {
-      var x = -FC.APPROACH_LEN + 18 + i * 38;
+      var x = -CHEVRON_LEAD + 10 + i * 26;
       var s = 16 * ui;
       ctx.globalAlpha = 0.14 + i * 0.10;
       ctx.beginPath();
@@ -1177,10 +1189,13 @@
           ctx.globalAlpha = 0.55;
           ctx.setLineDash([10 * this.ui, 8 * this.ui]);
           ctx.lineWidth = 3 * this.ui;
-          ctx.beginPath();
-          ctx.moveTo(-z.length / 2 - FC.APPROACH_LEN, 0);
-          ctx.lineTo(-z.length / 2, 0);
-          ctx.stroke();
+          // mark the two tips an aircraft can touch down on
+          ctx.setLineDash([]);
+          for (var t = -1; t <= 1; t += 2) {
+            ctx.beginPath();
+            ctx.arc(t * z.length / 2, 0, 9 * this.ui, 0, TAU);
+            ctx.stroke();
+          }
           ctx.setLineDash([]);
         }
       }

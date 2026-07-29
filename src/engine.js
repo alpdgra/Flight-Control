@@ -21,9 +21,6 @@
 
   // How far outside the play area aircraft are born.
   var SPAWN_OFFSET = 60;
-  // Straight-line distance in front of a runway threshold where the approach
-  // leg begins. Paths drawn to a runway are snapped to start here.
-  var APPROACH_LEN = 130;
   // Pointer must come this close to an aircraft to grab it. Sized so that on a
   // phone (roughly 0.4 CSS px per world unit) the target still clears the 44 px
   // that a fingertip needs.
@@ -35,6 +32,13 @@
   // Separation at which the proximity alarm starts, as a multiple of the
   // distance at which the two aircraft would actually collide.
   var WARN_FACTOR = 2.2;
+  // World units of detour a radian of turning is judged to be worth when
+  // choosing which end of a strip to land on. Keeps an aircraft from picking a
+  // marginally nearer tip that it would have to double back to reach.
+  var TURN_COST = 260;
+  // How far an aircraft may turn to enter the threshold directly before it is
+  // given a hook round the end of the strip to line up with.
+  var MAX_JOIN_TURN = 100 * Math.PI / 180;
 
   // --------------------------------------------------------------- math utils
 
@@ -115,8 +119,32 @@
   // -------------------------------------------------------------------- zones
 
   /**
+   * One usable direction along a strip: the tip the wheels touch, and the far
+   * end the rollout finishes at.
+   *
+   * There is deliberately no approach fix out in front of the strip. Aircraft
+   * fly to the tip and land on it, the same way a helicopter simply arrives at
+   * the pad — anything further out reads as the aircraft leaving the runway to
+   * go and line up somewhere else.
+   */
+  function approach(idx, cx, cy, angle, half) {
+    var dx = Math.cos(angle), dy = Math.sin(angle);
+    return {
+      idx: idx,
+      angle: angle,
+      dx: dx, dy: dy,
+      // the tip landed on, and the far end rolled out to
+      tx: cx - dx * half, ty: cy - dy * half,
+      ex: cx + dx * half, ey: cy + dy * half
+    };
+  }
+
+  /**
    * Build a linear landing zone (runway or water lane).
-   * `angle` is the heading aircraft travel while landing.
+   *
+   * A strip is usable in both directions, exactly like a real runway numbered
+   * at both ends. Aircraft take whichever end they arrive at, so arriving from
+   * the "wrong" side costs a turn rather than a lap of the map.
    */
   function strip(opts) {
     var dx = Math.cos(opts.angle), dy = Math.sin(opts.angle);
@@ -132,12 +160,10 @@
       width: opts.width,
       accepts: opts.accepts,
       color: opts.color,
-      // threshold (touchdown point) and rollout end
-      tx: opts.x - dx * half, ty: opts.y - dy * half,
-      ex: opts.x + dx * half, ey: opts.y + dy * half,
-      // where a snapped approach begins
-      fx: opts.x - dx * (half + APPROACH_LEN),
-      fy: opts.y - dy * (half + APPROACH_LEN)
+      approaches: [
+        approach(0, opts.x, opts.y, opts.angle, half),
+        approach(1, opts.x, opts.y, opts.angle + Math.PI, half)
+      ]
     };
   }
 
@@ -290,6 +316,7 @@
     this.path = [];           // remaining waypoints, path[0] is the next one
     this.trail = [];          // recent positions, renderer only
     this.landingZone = null;
+    this.approach = null;      // which end of the strip it is landing on
     this.drawing = false;
     this.entering = true;     // still crossing in from off-map
     this.state = 'flying';    // flying | landing | done
@@ -302,6 +329,7 @@
     this.fade = 1;
     this._prevPath = null;
     this._prevZone = null;
+    this._prevAp = null;
     this._dragDist = 0;
   }
 
@@ -479,9 +507,11 @@
     if (!a) return null;
     a._prevPath = a.path;
     a._prevZone = a.landingZone;
+    a._prevAp = a.approach;
     a._dragDist = 0;
     a.path = [];
     a.landingZone = null;
+    a.approach = null;
     a.drawing = true;
     this.drags[pointerId] = a;
     return a;
@@ -513,10 +543,11 @@
     if (a._dragDist < TAP_SLOP && a.path.length === 0) {
       a.path = a._prevPath || [];
       a.landingZone = a._prevZone || null;
-      a._prevPath = a._prevZone = null;
+      a.approach = a._prevAp || null;
+      a._prevPath = a._prevZone = a._prevAp = null;
       return null;
     }
-    a._prevPath = a._prevZone = null;
+    a._prevPath = a._prevZone = a._prevAp = null;
 
     var zone = this.zoneAt(x, y, a.type);
     if (zone) {
@@ -534,7 +565,8 @@
     a.drawing = false;
     a.path = a._prevPath || [];
     a.landingZone = a._prevZone || null;
-    a._prevPath = a._prevZone = null;
+    a.approach = a._prevAp || null;
+    a._prevPath = a._prevZone = a._prevAp = null;
   };
 
   /** The zone under a point that will accept `typeId`, if any. */
@@ -547,15 +579,149 @@
     return null;
   };
 
-  /** Snap the tail of an aircraft's path onto a zone's approach. */
+  /**
+   * Work out the route for landing on one end of a strip. Returns the waypoints,
+   * how far the aircraft would fly and its sharpest turn, so both ends can be
+   * compared and the better one taken.
+   */
+  Game.prototype.buildApproach = function (a, zone, ap, drawn) {
+    var pts = drawn.slice();
+
+    // The player releases *on* the strip, so the drawn line ends somewhere out
+    // along it. Trim back to the last point still short of this threshold,
+    // measured along this end's own landing direction — trimming merely to the
+    // edge of the strip can leave the tail beyond the tip, which then costs a
+    // turn back to reach it.
+    while (pts.length) {
+      var p = pts[pts.length - 1];
+      if ((p.x - ap.tx) * ap.dx + (p.y - ap.ty) * ap.dy > 0) pts.pop();
+      else break;
+    }
+
+    // Touch down on the tip and run the full length of the strip one way.
+    // Landing part-way along cuts the corner off the runway, so the tip is the
+    // only entry point.
+    //
+    // An aircraft arriving broadside cannot enter the tip already pointing down
+    // the strip, so it gets a hook: two points that swing it round the end and
+    // line it up. The hook stays within a runway width of the threshold — it is
+    // a tight turn onto the runway, not a corridor out in front of it.
+    var tail = pts.length ? pts[pts.length - 1] : { x: a.x, y: a.y };
+
+    // The direction the aircraft will be travelling as it reaches the tip. Very
+    // close in, the bearing to the tip is meaningless noise — an aircraft
+    // sitting just past the threshold facing the wrong way would look aligned —
+    // so fall back to the heading of the leg that brings it there.
+    var incoming;
+    if (dist(tail.x, tail.y, ap.tx, ap.ty) >= 24) {
+      incoming = Math.atan2(ap.ty - tail.y, ap.tx - tail.x);
+    } else if (pts.length >= 2) {
+      incoming = Math.atan2(pts[pts.length - 1].y - pts[pts.length - 2].y,
+                            pts[pts.length - 1].x - pts[pts.length - 2].x);
+    } else if (pts.length === 1) {
+      incoming = Math.atan2(pts[0].y - a.y, pts[0].x - a.x);
+    } else {
+      incoming = a.heading;
+    }
+    var joinTurn = Math.abs(angleDelta(incoming, ap.angle));
+    var curved = false;
+
+    if (joinTurn > MAX_JOIN_TURN) {
+      // Curve onto the strip with an arc that finishes at the threshold already
+      // pointing down it. The arc is tangent to the way the aircraft is coming
+      // in at one end and to the runway at the other, so both joins are smooth.
+      var nx = -ap.dy, ny = ap.dx;
+      // which way the arc has to bend, and how much of it is needed
+      var side = angleDelta(ap.angle, incoming) >= 0 ? -1 : 1;
+      var sweep = clamp(joinTurn, 0, Math.PI);
+      var R = clamp(zone.width * 1.0, 50, 85);
+
+      // The far end of the arc swings out to 2R beside the threshold. Clamping
+      // that back inside the map would flatten the curve into a kink, so if the
+      // chosen side has no room and the other does, bend the other way.
+      var self = this;
+      var arcFits = function (s) {
+        var ex = ap.tx + nx * s * 2 * R, ey = ap.ty + ny * s * 2 * R;
+        return ex > 10 && ex < self.W - 10 && ey > 10 && ey < self.H - 10;
+      };
+      if (!arcFits(side) && arcFits(-side)) side = -side;
+      var cx = ap.tx + nx * side * R;
+      var cy = ap.ty + ny * side * R;
+
+      var steps = Math.max(2, Math.ceil(sweep / (Math.PI / 6)));
+      for (var k = steps; k >= 1; k--) {
+        var phi = sweep * (k / steps);
+        pts.push({
+          x: clamp(cx - nx * side * R * Math.cos(phi) - ap.dx * R * Math.sin(phi), 8, this.W - 8),
+          y: clamp(cy - ny * side * R * Math.cos(phi) - ap.dy * R * Math.sin(phi), 8, this.H - 8)
+        });
+      }
+      curved = true;
+    }
+
+    // Only steer to the threshold if the aircraft is not effectively on it
+    // already. Sitting a few units past the tip, that waypoint is a backwards
+    // hop it would have to turn round for before it could set off down the
+    // strip — it is at the threshold, so just let it roll.
+    if (curved || dist(tail.x, tail.y, ap.tx, ap.ty) >= 25) {
+      pts.push({ x: ap.tx, y: ap.ty });
+    }
+    pts.push({ x: ap.ex, y: ap.ey });
+
+    var length = 0, worstTurn = 0;
+    var px = a.x, py = a.y;
+    var prevHeading = null;
+    for (var i = 0; i < pts.length; i++) {
+      var dx = pts[i].x - px, dy = pts[i].y - py;
+      var seg = Math.sqrt(dx * dx + dy * dy);
+      length += seg;
+      if (seg > 1e-6) {
+        var heading = Math.atan2(dy, dx);
+        if (prevHeading !== null) {
+          worstTurn = Math.max(worstTurn, Math.abs(angleDelta(prevHeading, heading)));
+        }
+        prevHeading = heading;
+      }
+      px = pts[i].x; py = pts[i].y;
+    }
+    return { points: pts, length: length, worstTurn: worstTurn };
+  };
+
+  /**
+   * Snap the tail of an aircraft's path onto a landing zone.
+   *
+   * A strip can be landed on at either tip, so both are costed and the better
+   * one wins — mostly the nearer, but a route that would need the aircraft to
+   * double back is penalised so it loses to the longer, straighter one.
+   */
   Game.prototype.assignLanding = function (a, zone) {
     a.landingZone = zone;
+
     if (zone.kind === 'helipad') {
+      // Drop anything drawn inside the pad; the pad centre is the last word.
+      while (a.path.length) {
+        var q = a.path[a.path.length - 1];
+        if (dist2(q.x, q.y, zone.x, zone.y) <= zone.radius * zone.radius) a.path.pop();
+        else break;
+      }
+      a.approach = null;
       a.path.push({ x: zone.x, y: zone.y });
-    } else {
-      a.path.push({ x: zone.fx, y: zone.fy });
-      a.path.push({ x: zone.ex, y: zone.ey });
+      return;
     }
+
+    var drawn = a.path;
+    var best = null, bestAp = null, bestCost = Infinity;
+    for (var i = 0; i < zone.approaches.length; i++) {
+      var candidate = this.buildApproach(a, zone, zone.approaches[i], drawn);
+      var cost = candidate.length + candidate.worstTurn * TURN_COST;
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = candidate;
+        bestAp = zone.approaches[i];
+      }
+    }
+    a.approach = bestAp;
+    a.path = best.points;
   };
 
   // ---- simulation ----------------------------------------------------------
@@ -684,8 +850,10 @@
     // rollout end) do we look for the threshold, otherwise a path that happens
     // to cross the runway earlier would trigger a false touchdown.
     if (a.path.length <= 1) {
-      var along = (a.x - z.tx) * z.dx + (a.y - z.ty) * z.dy;
-      var across = Math.abs(-(a.x - z.x) * z.dy + (a.y - z.y) * z.dx);
+      var ap = a.approach;
+      if (!ap) return;
+      var along = (a.x - ap.tx) * ap.dx + (a.y - ap.ty) * ap.dy;
+      var across = Math.abs(-(a.x - z.x) * ap.dy + (a.y - z.y) * ap.dx);
       if (along >= 0 && across <= z.width) this.beginLanding(a, z);
     }
   };
@@ -701,10 +869,11 @@
       a.landTo = { x: z.x, y: z.y };
     } else {
       a.landDur = 0.78;
-      a.heading = z.angle;
-      a.drawHeading = z.angle;
+      var ap = a.approach || z.approaches[0];
+      a.heading = ap.angle;
+      a.drawHeading = ap.angle;
       a.landFrom = { x: a.x, y: a.y };
-      a.landTo = { x: z.ex, y: z.ey };
+      a.landTo = { x: ap.ex, y: ap.ey };
     }
     this.score++;
     this.landedByType[a.type] = (this.landedByType[a.type] || 0) + 1;
@@ -796,7 +965,12 @@
       // re-point any assigned landing at the rebuilt zone
       if (a.landingZone) {
         for (var z = 0; z < this.zones.length; z++) {
-          if (this.zones[z].id === a.landingZone.id) { a.landingZone = this.zones[z]; break; }
+          if (this.zones[z].id !== a.landingZone.id) continue;
+          a.landingZone = this.zones[z];
+          if (a.approach && this.zones[z].approaches) {
+            a.approach = this.zones[z].approaches[a.approach.idx];
+          }
+          break;
         }
       }
     }
@@ -809,7 +983,6 @@
     WORLD_H: WORLD_H,
     MIN_ASPECT: MIN_ASPECT,
     MAX_ASPECT: MAX_ASPECT,
-    APPROACH_LEN: APPROACH_LEN,
     GRAB_RADIUS: GRAB_RADIUS,
     TYPES: TYPES,
     MAPS: MAPS,

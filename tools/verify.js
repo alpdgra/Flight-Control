@@ -126,7 +126,11 @@ async function main() {
 
   check(await page.$$eval('.map-card', (n) => n.length) === 3, 'menu lists all three airports');
   check(await page.evaluate('!!window.__fc.attract'), 'attract game runs behind the menu');
-  check(await page.evaluate('window.__fc.attract.aircraft.length > 0'), 'attract traffic is airborne');
+  // the first arrival is scheduled a beat after load, so wait for it
+  const attractFlying = await page
+    .waitForFunction('window.__fc.attract.aircraft.length > 0', null, { timeout: 15000 })
+    .then(() => true, () => false);
+  check(attractFlying, 'attract traffic is airborne');
 
   // the canvas must actually have paint on it
   const painted = await page.evaluate(`(function () {
