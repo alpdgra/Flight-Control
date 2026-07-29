@@ -36,6 +36,9 @@
   // choosing which end of a strip to land on. Keeps an aircraft from picking a
   // marginally nearer tip that it would have to double back to reach.
   var TURN_COST = 260;
+  // How far an aircraft may turn to enter the threshold directly before it is
+  // given a hook round the end of the strip to line up with.
+  var MAX_JOIN_TURN = 100 * Math.PI / 180;
 
   // --------------------------------------------------------------- math utils
 
@@ -585,25 +588,85 @@
     var pts = drawn.slice();
 
     // The player releases *on* the strip, so the drawn line ends somewhere out
-    // along it. Drop those points, or the aircraft flies to where the finger
-    // stopped and then hops back to the touchdown point.
+    // along it. Trim back to the last point still short of this threshold,
+    // measured along this end's own landing direction — trimming merely to the
+    // edge of the strip can leave the tail beyond the tip, which then costs a
+    // turn back to reach it.
     while (pts.length) {
       var p = pts[pts.length - 1];
-      if (zoneCaptures(zone, p.x, p.y)) pts.pop();
+      if ((p.x - ap.tx) * ap.dx + (p.y - ap.ty) * ap.dy > 0) pts.pop();
       else break;
     }
 
-    // Touch down where the aircraft actually meets the strip, not at a fixed
-    // point it has to go and find: project its arrival onto the centreline and
-    // clamp it into the near half. Coming from beyond the end that lands it on
-    // the tip; coming in abeam the middle it lands abeam the middle, the same
-    // way a helicopter simply arrives on the pad.
+    // Touch down on the tip and run the full length of the strip one way.
+    // Landing part-way along cuts the corner off the runway, so the tip is the
+    // only entry point.
+    //
+    // An aircraft arriving broadside cannot enter the tip already pointing down
+    // the strip, so it gets a hook: two points that swing it round the end and
+    // line it up. The hook stays within a runway width of the threshold — it is
+    // a tight turn onto the runway, not a corridor out in front of it.
     var tail = pts.length ? pts[pts.length - 1] : { x: a.x, y: a.y };
-    var along = clamp((tail.x - ap.tx) * ap.dx + (tail.y - ap.ty) * ap.dy,
-                      0, zone.length * 0.55);
 
-    pts.push({ x: ap.tx + ap.dx * along, y: ap.ty + ap.dy * along });
-    pts.push({ x: ap.ex, y: ap.ey });   // roll out to the far end
+    // The direction the aircraft will be travelling as it reaches the tip. Very
+    // close in, the bearing to the tip is meaningless noise — an aircraft
+    // sitting just past the threshold facing the wrong way would look aligned —
+    // so fall back to the heading of the leg that brings it there.
+    var incoming;
+    if (dist(tail.x, tail.y, ap.tx, ap.ty) >= 24) {
+      incoming = Math.atan2(ap.ty - tail.y, ap.tx - tail.x);
+    } else if (pts.length >= 2) {
+      incoming = Math.atan2(pts[pts.length - 1].y - pts[pts.length - 2].y,
+                            pts[pts.length - 1].x - pts[pts.length - 2].x);
+    } else if (pts.length === 1) {
+      incoming = Math.atan2(pts[0].y - a.y, pts[0].x - a.x);
+    } else {
+      incoming = a.heading;
+    }
+    var joinTurn = Math.abs(angleDelta(incoming, ap.angle));
+    var curved = false;
+
+    if (joinTurn > MAX_JOIN_TURN) {
+      // Curve onto the strip with an arc that finishes at the threshold already
+      // pointing down it. The arc is tangent to the way the aircraft is coming
+      // in at one end and to the runway at the other, so both joins are smooth.
+      var nx = -ap.dy, ny = ap.dx;
+      // which way the arc has to bend, and how much of it is needed
+      var side = angleDelta(ap.angle, incoming) >= 0 ? -1 : 1;
+      var sweep = clamp(joinTurn, 0, Math.PI);
+      var R = clamp(zone.width * 1.0, 50, 85);
+
+      // The far end of the arc swings out to 2R beside the threshold. Clamping
+      // that back inside the map would flatten the curve into a kink, so if the
+      // chosen side has no room and the other does, bend the other way.
+      var self = this;
+      var arcFits = function (s) {
+        var ex = ap.tx + nx * s * 2 * R, ey = ap.ty + ny * s * 2 * R;
+        return ex > 10 && ex < self.W - 10 && ey > 10 && ey < self.H - 10;
+      };
+      if (!arcFits(side) && arcFits(-side)) side = -side;
+      var cx = ap.tx + nx * side * R;
+      var cy = ap.ty + ny * side * R;
+
+      var steps = Math.max(2, Math.ceil(sweep / (Math.PI / 6)));
+      for (var k = steps; k >= 1; k--) {
+        var phi = sweep * (k / steps);
+        pts.push({
+          x: clamp(cx - nx * side * R * Math.cos(phi) - ap.dx * R * Math.sin(phi), 8, this.W - 8),
+          y: clamp(cy - ny * side * R * Math.cos(phi) - ap.dy * R * Math.sin(phi), 8, this.H - 8)
+        });
+      }
+      curved = true;
+    }
+
+    // Only steer to the threshold if the aircraft is not effectively on it
+    // already. Sitting a few units past the tip, that waypoint is a backwards
+    // hop it would have to turn round for before it could set off down the
+    // strip — it is at the threshold, so just let it roll.
+    if (curved || dist(tail.x, tail.y, ap.tx, ap.ty) >= 25) {
+      pts.push({ x: ap.tx, y: ap.ty });
+    }
+    pts.push({ x: ap.ex, y: ap.ey });
 
     var length = 0, worstTurn = 0;
     var px = a.x, py = a.y;
